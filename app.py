@@ -139,14 +139,14 @@ def index():
     <h2>Turkuvaz IPTV Proxy (Slug Destekli)</h2>
     <ul>
     {% for ch in channels %}
-        <li><a href="/stream/{{ ch }}">{{ ch.upper() }} M3U8 Linki</a> (<code>/stream/{{ ch }}</code>)</li>
+        <li><a href="/stream/{{ ch }}.m3u8">{{ ch.upper() }} M3U8 Linki</a> (<code>/stream/{{ ch }}</code>)</li>
     {% endfor %}
     </ul>
     <p><a href="/refresh"> Kanalları Yenile (Restart Olmadan)</a></p>
     """
     return render_template_string(html, channels=CHANNELS.keys())
 
-@app.route('/stream/<channel_name>')
+@app.route('/stream/<channel_name>.m3u8')
 def stream_route(channel_name):
     if channel_name not in CHANNELS:
         return "Kanal bulunamad", 404
