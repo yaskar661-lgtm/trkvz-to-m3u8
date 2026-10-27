@@ -3,8 +3,7 @@ import time
 import threading
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, Response, jsonify, render_template_string
-import os
+from flask import Flask, Response, jsonify, render_template_string, redirect
 
 app = Flask(__name__)
 
@@ -71,7 +70,6 @@ def get_turkuvaz_stream(url, channel_slug):
 
     if not hls_url:
         hls_url = f"https://trkvz-live.ercdn.net/{channel_slug}/{channel_slug}.m3u8"
-        print(f"[*] [{channel_slug}] VideoJS'den HLS yok, slug fallback kullanılıyor: {hls_url}")
 
     secure_api = "https://securevideotoken.tmgrup.com.tr/webtv/secure"
     try:
@@ -79,7 +77,7 @@ def get_turkuvaz_stream(url, channel_slug):
         if secure_res.get("Success"):
             return secure_res["Url"]
     except Exception as e:
-        print(f"[-] Secure token yok ({channel_slug}): {e}")
+        print(f"[-] Secure token isteği başarısız ({channel_slug}): {e}")
         
     return None
 
@@ -92,38 +90,19 @@ def update_channel_stream(channel_name):
     if not final_m3u8:
         return None
 
-    try:
-        m3u8_res = requests.get(final_m3u8, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        if m3u8_res.status_code == 200:
-            raw_content = m3u8_res.text
-            
-            base_url = re.sub(r'/[^/]+\.m3u8.*$', '/', final_m3u8)
-            
-            updated_lines = []
-            for line in raw_content.splitlines():
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    if not line.startswith('http://') and not line.startswith('https://'):
-                        line = base_url + line
-                updated_lines.append(line)
-            
-            final_content = "\n".join(updated_lines)
-            
-            with cache_lock:
-                stream_cache[channel_name] = {
-                    "m3u8_url": final_m3u8,
-                    "content": final_content,
-                    "timestamp": time.time()
-                }
-            return final_content
-    except Exception as e:
-        print(f"[-] M3U8 içerik çekme hatası ({channel_name}): {e}")
-    return None
+    # Yönlendirme mantığında içeriği proxy etmeye gerek kalmadığı için
+    # doğrudan m3u8_url'i cache'e kaydediyoruz.
+    with cache_lock:
+        stream_cache[channel_name] = {
+            "m3u8_url": final_m3u8,
+            "timestamp": time.time()
+        }
+    return final_m3u8
 
 def background_updater():
     while True:
         time.sleep(3600)  # 1 saat
-        print("[*] Arka plan tetiklendi: Tüm kanallar güncelleniyor...")
+        print("[*] Arka plan zamanlayıcısı tetiklendi: Tüm kanallar güncelleniyor...")
         for ch in CHANNELS:
             try:
                 update_channel_stream(ch)
@@ -132,22 +111,20 @@ def background_updater():
 
 threading.Thread(target=background_updater, daemon=True).start()
 
-# --- FLASK ROUTE'LARI ---
-
 @app.route('/')
 def index():
     html = """
-    <h2>Turkuvaz IPTV Proxy (Slug Destekli)</h2>
+    <h2>Turkuvaz IPTV Proxy (Redirect Destekli)</h2>
     <ul>
     {% for ch in channels %}
-        <li><a href="/stream/{{ ch }}.m3u8">{{ ch.upper() }} M3U8 Linki</a> (<code>/stream/{{ ch }}</code>)</li>
+        <li><a href="/stream/{{ ch }}">{{ ch.upper() }} M3U8 Linki</a> (<code>/stream/{{ ch }}</code>)</li>
     {% endfor %}
     </ul>
-    <p><a href="/refresh"> Kanalları Yenile (Restart Olmadan)</a></p>
+    <p><a href="/refresh">🔄 Kanalları Şimdi Yenile (Restart Olmadan)</a></p>
     """
     return render_template_string(html, channels=CHANNELS.keys())
 
-@app.route('/stream/<channel_name>.m3u8')
+@app.route('/stream/<channel_name>')
 def stream_route(channel_name):
     if channel_name not in CHANNELS:
         return "Kanal bulunamadı", 404
@@ -157,15 +134,16 @@ def stream_route(channel_name):
         is_expired = not cached or (time.time() - cached["timestamp"] > 3600)
 
     if is_expired:
-        content = update_channel_stream(channel_name)
-        if not content and cached:
-            content = cached["content"]
-        elif not content:
+        m3u8_url = update_channel_stream(channel_name)
+        if not m3u8_url and cached:
+            m3u8_url = cached["m3u8_url"]  # Güncelleme başarısızsa eski taze linki kullan
+        elif not m3u8_url:
             return "Yayın linki alınamadı", 500
     else:
-        content = cached["content"]
+        m3u8_url = cached["m3u8_url"]
 
-    return Response(content, mimetype='application/vnd.apple.mpegurl')
+    # İçeriği döndürmek yerine doğrudan taze secure m3u8 adresine yönlendir (HTTP 302)
+    return redirect(m3u8_url)
 
 @app.route('/refresh')
 def refresh_streams():
@@ -186,5 +164,4 @@ def refresh_streams():
     })
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False)
