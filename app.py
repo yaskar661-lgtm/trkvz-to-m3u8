@@ -116,7 +116,7 @@ def update_channel_stream(channel_name):
                 }
             return final_content
     except Exception as e:
-        print(f"[-] M3U8 içerik çekme hatas ({channel_name}): {e}")
+        print(f"[-] M3U8 içerik çekme hatası ({channel_name}): {e}")
     return None
 
 def background_updater():
@@ -142,14 +142,14 @@ def index():
         <li><a href="/stream/{{ ch }}.m3u8">{{ ch.upper() }} M3U8 Linki</a> (<code>/stream/{{ ch }}</code>)</li>
     {% endfor %}
     </ul>
-    <p><a href="/refresh"> Kanalları Yenile (Restart Olmadan)</a></p>
+    <p><a href="/refresh"> Kanalları Yenile (Restart Olmadan)</a></p>
     """
     return render_template_string(html, channels=CHANNELS.keys())
 
 @app.route('/stream/<channel_name>.m3u8')
 def stream_route(channel_name):
     if channel_name not in CHANNELS:
-        return "Kanal bulunamad", 404
+        return "Kanal bulunamadı", 404
     
     with cache_lock:
         cached = stream_cache.get(channel_name)
@@ -185,4 +185,5 @@ def refresh_streams():
     })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
