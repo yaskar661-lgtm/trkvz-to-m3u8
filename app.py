@@ -26,14 +26,13 @@ def fix_url(target_url):
     if not target_url:
         return target_url
     target_url = target_url.strip()
-    if "%" in target_url:
+    if "%3F" in target_url or "%26" in target_url:
         target_url = unquote(target_url)
     if not target_url.startswith("http://") and not target_url.startswith("https://"):
         if any(d in target_url for d in ALLOWED_DOMAINS):
             target_url = "https://" + target_url.lstrip("/")
     return target_url
 
-# --- KANAL LİSTELERİ ---
 DIRECT_CHANNELS = {
     "atvdai": "https://trkvz.daioncdn.net/atv/atv.m3u8?ce=3&app=d1ce2d40-5256-4550-b02e-e73c185a314e",
     "aspordai": "https://trkvz.daioncdn.net/aspor/aspor.m3u8?ce=3&app=45f847c4-04e8-419a-a561-2ebf87084765",
@@ -90,7 +89,6 @@ def get_direct_stream(raw_url, channel_name="proxy_auto"):
             resolved = response[url_key]
             
         if resolved:
-            # ce=3 parametresinin eksiksiz eklenmesini garantile
             if "daioncdn" in resolved.lower() and "ce=" not in resolved:
                 separator = "&" if "?" in resolved else "?"
                 resolved = f"{resolved}{separator}ce=3"
@@ -105,7 +103,6 @@ def get_direct_stream(raw_url, channel_name="proxy_auto"):
 
 def update_channel_stream(channel_name):
     final_m3u8 = None
-    
     if channel_name in DIRECT_CHANNELS:
         raw_url = DIRECT_CHANNELS[channel_name]
         final_m3u8 = get_direct_stream(raw_url, channel_name)
@@ -116,7 +113,7 @@ def update_channel_stream(channel_name):
         return None
 
     try:
-        m3u8_res = requests.get(final_m3u8, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        m3u8_res = requests.get(final_m3u8, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.atv.com.tr/"}, timeout=10)
         if m3u8_res.status_code == 200:
             raw_content = m3u8_res.text
             base_url = re.sub(r'/[^/]+\.m3u8.*$', '/', final_m3u8)
@@ -134,11 +131,11 @@ def update_channel_stream(channel_name):
                     else:
                         seg_url = base_url + line
                     
-                    line = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/')}"
+                    # SEGMENT LİNKLERİNİ ENCODE ETMEDEN (safe=':/?&=') ROTA ÜZERİNE YAZ
+                    line = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/?&=')}"
                 updated_lines.append(line)
             
             final_content = "\n".join(updated_lines)
-            
             with cache_lock:
                 stream_cache[channel_name] = {
                     "m3u8_url": final_m3u8,
@@ -149,8 +146,6 @@ def update_channel_stream(channel_name):
     except Exception as e:
         print(f"[-] M3U8 içerik çekme hatası ({channel_name}): {e}")
     return None
-
-# --- FLASK ROUTE'LARI ---
 
 @app.route('/daion/index.html')
 def daion_player_page():
@@ -228,10 +223,7 @@ def daion_player_page():
     const CACHE_DURATION = 15 * 60 * 1000; 
 
     async function fetchSecureStreamUrl(rawUrl, channelName) {
-      if (rawUrl.includes("ercdn.net")) {
-        return rawUrl;
-      }
-      
+      if (rawUrl.includes("ercdn.net")) return rawUrl;
       const randNum = Math.floor(Math.random() * 1000000);
       const timestamp = Date.now();
       const secureApi = `https://securevideotoken.tmgrup.com.tr/webtv/secure?{randNum}`.replace('{randNum}', randNum);
@@ -258,29 +250,20 @@ def daion_player_page():
           }
           return resUrl;
         }
-      } catch (err) {
-        console.warn(`[${channelName}] Doğrudan token alınamadı, ham linke düşülüyor.`);
-      }
+      } catch (err) {}
       return rawUrl; 
     }
 
     async function getCachedOrFreshStreamUrl(channelName, forceRefresh = false) {
       const now = Date.now();
       const cached = streamCache[channelName];
-
       if (!forceRefresh && cached && (now - cached.timestamp < CACHE_DURATION)) {
         return cached.url;
       }
-
       statusDiv.innerText = `Durum: [${channelName}] hazırlanıyor...`;
       const rawUrl = channels[channelName];
       const freshUrl = await fetchSecureStreamUrl(rawUrl, channelName);
-
-      streamCache[channelName] = {
-        url: freshUrl,
-        timestamp: now
-      };
-
+      streamCache[channelName] = { url: freshUrl, timestamp: now };
       return freshUrl;
     }
 
@@ -290,14 +273,10 @@ def daion_player_page():
 
       statusDiv.innerText = `Durum: [${selectedKey}] yükleniyor...`;
       const finalVideoSrc = await getCachedOrFreshStreamUrl(selectedKey, false);
-
       linkBox.innerText = "Aktif M3U8 Linki: " + finalVideoSrc;
 
       if (Hls.isSupported()) {
-        if (hls) {
-          hls.destroy();
-        }
-        
+        if (hls) hls.destroy();
         hls = new Hls();
         hls.loadSource(finalVideoSrc);
         hls.attachMedia(video);
@@ -332,13 +311,8 @@ def daion_player_page():
       loadPlayer();
     }
 
-    function changeChannel() {
-      loadPlayer();
-    }
-
-    window.onload = async () => {
-      loadPlayer();
-    };
+    function changeChannel() { loadPlayer(); }
+    window.onload = async () => { loadPlayer(); };
   </script>
 </body>
 </html>
@@ -359,7 +333,7 @@ def stream_route(channel_name):
                     raw_atv_url = match.group(1)
                     resolved_url = get_direct_stream(raw_atv_url, "atvdai")
                     if resolved_url:
-                        m3u8_res = requests.get(resolved_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                        m3u8_res = requests.get(resolved_url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.atv.com.tr/"}, timeout=10)
                         if m3u8_res.status_code == 200:
                             raw_content = m3u8_res.text
                             base_url = re.sub(r'/[^/]+\.m3u8.*$', '/', resolved_url)
@@ -376,7 +350,8 @@ def stream_route(channel_name):
                                     else:
                                         seg_url = base_url + line
                                     
-                                    line = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/')}"
+                                    # ENCODE ETMEDEN (safe=':/?&=') YAZ
+                                    line = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/?&=')}"
                                 updated_lines.append(line)
                             return Response("\n".join(updated_lines), mimetype='application/vnd.apple.mpegurl')
         except Exception as e:
@@ -407,24 +382,21 @@ def proxy_media():
     
     if match:
         target_url = match.group(1)
-        if "%" in target_url and not target_url.startswith("http"):
+        if "%3F" in target_url or "%26" in target_url:
             target_url = unquote(target_url)
     else:
-        raw_target = (
+        target_url = (
             request.args.get("url") or 
             request.args.get("URL") or 
             request.args.get("uri") or 
             request.args.get("URI")
         )
-        target_url = raw_target
 
     target_url = fix_url(target_url)
     if not target_url:
         return "URL/URI belirtilmedi", 400
 
-    # Daion CDN linki ve token parametreleri eksikse tam URL ile otomatik secure token al!
     if "daioncdn" in target_url.lower() and "st=" not in target_url and "e=" not in target_url:
-        print(f"[*] /proxy tam ham URL için otomatik secure token alınıyor: {target_url}")
         target_url = get_direct_stream(target_url, "proxy_auto_token")
 
     if not is_allowed_domain(target_url):
@@ -436,8 +408,21 @@ def proxy_media():
             "Referer": "https://www.atv.com.tr/"
         }
         req = requests.get(target_url, headers=headers, stream=True, timeout=10)
-        req.raise_for_status()
+        
+        if req.status_code in [401, 403] and "daioncdn" in target_url.lower():
+            print(f"[*] Segment yetkilendirme hatası ({req.status_code}), taze token yenileniyor...")
+            base_raw = target_url.split(".m3u8")[0] + ".m3u8?ce=3"
+            if "app=" in target_url:
+                app_match = re.search(r'app=([^&]+)', target_url)
+                if app_match:
+                    base_raw += f"&app={app_match.group(1)}"
+            
+            fresh_url = get_direct_stream(base_raw, "segment_retry")
+            if fresh_url:
+                target_url = fresh_url
+                req = requests.get(target_url, headers=headers, stream=True, timeout=10)
 
+        req.raise_for_status()
         content_type = req.headers.get("Content-Type", "application/octet-stream")
 
         if "application/vnd.apple.mpegurl" in content_type or "audio/mpegurl" in content_type or target_url.endswith(".m3u8"):
@@ -457,10 +442,9 @@ def proxy_media():
                     else:
                         seg_url = base_url + line
 
-                    proxied_seg = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/')}"
-                    new_lines.append(proxied_seg)
-                else:
-                    new_lines.append(line)
+                    # ALT M3U8 VEYA SEGMENTLERİ DE ENCODE ETMEDEN YAZ
+                    line = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/?&=')}"
+                updated_lines.append(line)
 
             return Response("\n".join(new_lines), mimetype="application/vnd.apple.mpegurl")
 
@@ -473,4 +457,5 @@ def proxy_media():
         return f"Medya aktarım hatası: {str(e)}", 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
