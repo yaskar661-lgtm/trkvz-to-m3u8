@@ -12,7 +12,8 @@ ALLOWED_DOMAINS = [
     "trkvz-live.ercdn.net",
     "trkvz.daioncdn.net",
     "trkvz-live.daioncdn.net",
-    "trkvz-to-m3u8-index.onrender.com"  # Dış servis domaini eklendi
+    "trkvz-to-m3u8-index.onrender.com",
+    "rnttwmjcin.turknet.ercdn.net"
 ]
 
 TARGET_HEADERS = {
