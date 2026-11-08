@@ -59,7 +59,7 @@ ALL_CHANNELS = {**DIRECT_CHANNELS, **WEB_CHANNELS}
 stream_cache = {}
 cache_lock = threading.Lock()
 
-def get_direct_stream(raw_url, channel_name):
+def get_direct_stream(raw_url, channel_name="proxy_auto"):
     is_daion = "daioncdn" in raw_url.lower() or "app=" in raw_url
     try:
         if is_daion:
@@ -253,7 +253,7 @@ def daion_player_page():
         return cached.url;
       }
 
-      statusDiv.innerText = `Durum: [${channelName}] taze token alınıyor...`;
+      statusDiv.innerText = `Durum: [${channelName}] hazırlanıyor...`;
       const rawUrl = channels[channelName];
       const freshUrl = await fetchSecureStreamUrl(rawUrl, channelName);
 
@@ -272,7 +272,6 @@ def daion_player_page():
       statusDiv.innerText = `Durum: [${selectedKey}] yükleniyor...`;
       const finalVideoSrc = await getCachedOrFreshStreamUrl(selectedKey, false);
 
-      // Doğrudan secure token'lı imzalı link ekrandaki kutuya yazdırılır
       linkBox.innerText = "Aktif M3U8 Linki: " + finalVideoSrc;
 
       if (Hls.isSupported()) {
@@ -393,6 +392,11 @@ def proxy_media():
     target_url = fix_url(raw_target)
     if not target_url:
         return "URL/URI belirtilmedi", 400
+
+    # AKILLI TOKEN KONTROLÜ: Gelen URL daioncdn tabanlıysa ve st/e parametreleri yoksa otomatik token üret!
+    if "daioncdn" in target_url.lower() and "st=" not in target_url and "e=" not in target_url:
+        print(f"[*] /proxy gelen ham Daion URL için otomatik secure token alınıyor: {target_url}")
+        target_url = get_direct_stream(target_url, "proxy_auto_token")
 
     if not is_allowed_domain(target_url):
         return "Bu domainin proxy'lenmesine izin verilmiyor.", 403
