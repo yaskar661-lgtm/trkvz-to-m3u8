@@ -11,8 +11,7 @@ ALLOWED_DOMAINS = [
     "securevideotoken.tmgrup.com.tr",
     "trkvz-live.ercdn.net",
     "trkvz.daioncdn.net",
-    "trkvz-live.daioncdn.net",
-    "www.atv.com.tr"
+    "trkvz-live.daioncdn.net"
 ]
 
 TARGET_HEADERS = {
