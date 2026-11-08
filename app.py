@@ -93,15 +93,10 @@ def get_direct_stream(raw_url, channel_name):
 def update_channel_stream(channel_name):
     final_m3u8 = None
     
-    # Özel atvdai yönetimi: Doğrudan HTML içindeki JS mantığıyla token'ı çözebiliriz
-    if channel_name == "atvdai":
-        raw_url = DIRECT_CHANNELS["atvdai"]
-        final_m3u8 = get_direct_stream(raw_url, channel_name)
-    elif channel_name in DIRECT_CHANNELS:
+    if channel_name in DIRECT_CHANNELS:
         raw_url = DIRECT_CHANNELS[channel_name]
         final_m3u8 = get_direct_stream(raw_url, channel_name)
     elif channel_name in WEB_CHANNELS:
-        # Web channels için basitleştirilmiş fallback
         final_m3u8 = f"https://trkvz-live.ercdn.net/{channel_name}/{channel_name}.m3u8"
         
     if not final_m3u8:
@@ -146,7 +141,6 @@ def update_channel_stream(channel_name):
 
 @app.route('/daion/index.html')
 def daion_player_page():
-    # İstediğin HTML kodu, Daion m3u8 linkini ekranda gösterecek şekilde güncellendi
     html_template = """
 <!DOCTYPE html>
 <html lang="tr">
@@ -168,6 +162,7 @@ def daion_player_page():
   <div class="container">
     <h2>Turkuvaz Çoklu Kanal Canlı Yayın Oynatıcı</h2>
     <div id="status">Durum: Başlatılıyor...</div>
+    <!-- /stream/atvdai rotasının regex ile yakalayacağı gizli veya açık alan -->
     <div id="linkBox">Aktif M3U8 Linki: Bekleniyor...</div><br>
     
     <label for="channelSelect">Kanal Seçin:</label><br>
@@ -226,7 +221,7 @@ def daion_player_page():
       }
       const isDaion = rawUrl.toLowerCase().includes("daioncdn") || rawUrl.includes("app=");
       const randNum = Math.floor(Math.random() * 1000000);
-      const secureApi = `https://securevideotoken.tmgrup.com.tr/webtv/secure?${randNum}`;
+      const secureApi = `https://securevideotoken.tmgrup.com.tr/webtv/secure?{randNum}`.replace('{randNum}', randNum);
       const targetUrl = `${secureApi}&url=${encodeURIComponent(rawUrl)}`;
 
       try {
@@ -272,6 +267,7 @@ def daion_player_page():
       statusDiv.innerText = `Durum: [${selectedKey}] yükleniyor...`;
       const finalVideoSrc = await getCachedOrFreshStreamUrl(selectedKey, false);
 
+      // Backend /stream/atvdai buradaki yazıyı Regex ile okuyacak
       linkBox.innerText = "Aktif M3U8 Linki: " + finalVideoSrc;
 
       if (Hls.isSupported()) {
@@ -328,39 +324,47 @@ def daion_player_page():
 
 @app.route('/stream/<channel_name>')
 def stream_route(channel_name):
+    host_root = request.host_url.rstrip("/")
+    
     if channel_name == "atvdai":
         try:
-            # /daion/index.html sayfasını dahili olarak istek atıp çekiyoruz
-            host_root = request.host_url.rstrip("/")
+            # 1. /daion/index.html sayfasını requests ile çek
             page_res = requests.get(f"{host_root}/daion/index.html", timeout=5)
             if page_res.status_code == 200:
-                # HTML içinden veya JS çalışması sonucu üretilecek Daion linkini regex ile yakalama mantığı
-                # Alternatif olarak doğrudan backend'de atvdai token'ını üretebiliriz:
-                resolved_url = get_direct_stream(DIRECT_CHANNELS["atvdai"], "atvdai")
-                if resolved_url:
-                    # Bu linkin içeriğini çekip proxy üzerinden rewrite edelim
-                    m3u8_res = requests.get(resolved_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-                    if m3u8_res.status_code == 200:
-                        raw_content = m3u8_res.text
-                        base_url = re.sub(r'/[^/]+\.m3u8.*$', '/', resolved_url)
-                        
-                        updated_lines = []
-                        for line in raw_content.splitlines():
-                            line = line.strip()
-                            if line and not line.startswith('#'):
-                                if line.startswith('http://') or line.startswith('https://'):
-                                    seg_url = line
-                                elif line.startswith('/'):
-                                    parsed_base = urlparse(resolved_url)
-                                    seg_url = f"{parsed_base.scheme}://{parsed_base.netloc}{line}"
-                                else:
-                                    seg_url = base_url + line
-                                
-                                line = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/')}"
-                            updated_lines.append(line)
-                        return Response("\n".join(updated_lines), mimetype='application/vnd.apple.mpegurl')
+                html_text = page_res.text
+                
+                # 2. HTML içindeki JS objesinden veya linkBox yazısından atvdai m3u8 linkini Regex ile bul
+                # Örn: "atvdai": "https://trkvz.daioncdn.net/atv/atv.m3u8?..." yakalama:
+                match = re.search(r'"atvdai"\s*:\s*"(https://[^"]+)"', html_text)
+                if match:
+                    raw_atv_url = match.group(1)
+                    
+                    # 3. Bulunan bu raw URL'yi token fonksiyonumuzla çöz
+                    resolved_url = get_direct_stream(raw_atv_url, "atvdai")
+                    if resolved_url:
+                        # 4. İçeriği çekip segmentleri proxy üzerinden rewrite et
+                        m3u8_res = requests.get(resolved_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                        if m3u8_res.status_code == 200:
+                            raw_content = m3u8_res.text
+                            base_url = re.sub(r'/[^/]+\.m3u8.*$', '/', resolved_url)
+                            
+                            updated_lines = []
+                            for line in raw_content.splitlines():
+                                line = line.strip()
+                                if line and not line.startswith('#'):
+                                    if line.startswith('http://') or line.startswith('https://'):
+                                        seg_url = line
+                                    elif line.startswith('/'):
+                                        parsed_base = urlparse(resolved_url)
+                                        seg_url = f"{parsed_base.scheme}://{parsed_base.netloc}{line}"
+                                    else:
+                                        seg_url = base_url + line
+                                    
+                                    line = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/')}"
+                                updated_lines.append(line)
+                            return Response("\n".join(updated_lines), mimetype='application/vnd.apple.mpegurl')
         except Exception as e:
-            print(f"[-] atvdai stream route hatası: {e}")
+            print(f"[-] atvdai regex stream hatası: {e}")
 
     # Diğer daion ve ercdn kanalları kendi token yöntemiyle devam eder
     if channel_name not in ALL_CHANNELS:
