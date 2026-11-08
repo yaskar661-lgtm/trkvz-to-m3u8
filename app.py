@@ -12,7 +12,7 @@ ALLOWED_DOMAINS = [
     "trkvz-live.ercdn.net",
     "trkvz.daioncdn.net",
     "trkvz-live.daioncdn.net"
-    "atv.com.tr"
+    "www.atv.com.tr"
 ]
 
 TARGET_HEADERS = {
