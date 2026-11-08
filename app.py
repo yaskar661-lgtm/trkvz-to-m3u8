@@ -383,19 +383,33 @@ def stream_route(channel_name):
 
 @app.route('/proxy')
 def proxy_media():
-    raw_target = (
-        request.args.get("url") or 
-        request.args.get("URL") or 
-        request.args.get("uri") or 
-        request.args.get("URI")
-    )
-    target_url = fix_url(raw_target)
+    # URL'in tamamını ham olarak yakala (Flask'ın & parametrelerini bölmesini engellemek için)
+    full_path = request.full_path # Örn: /proxy?url=https://...&app=...
+    match = re.search(r'[?&](?:url|URL|uri|URI)=([^&]+(?:&.*)?)', full_path)
+    
+    if match:
+        target_url = match.group(1)
+        # Eğer url=%2F... şeklinde encode edilmişse veya ek parametreler varsa çöz
+        if "%" in target_url and not target_url.startswith("http"):
+            from urllib.parse import unquote
+            target_url = unquote(target_url)
+    else:
+        # Fallback standart yöntem
+        raw_target = (
+            request.args.get("url") or 
+            request.args.get("URL") or 
+            request.args.get("uri") or 
+            request.args.get("URI")
+        )
+        target_url = raw_target
+
+    target_url = fix_url(target_url)
     if not target_url:
         return "URL/URI belirtilmedi", 400
 
-    # AKILLI TOKEN KONTROLÜ: Gelen URL daioncdn tabanlıysa ve st/e parametreleri yoksa otomatik token üret!
+    # Daion CDN linki ve token parametreleri eksikse tam URL ile otomatik secure token al!
     if "daioncdn" in target_url.lower() and "st=" not in target_url and "e=" not in target_url:
-        print(f"[*] /proxy gelen ham Daion URL için otomatik secure token alınıyor: {target_url}")
+        print(f"[*] /proxy tam ham URL için otomatik secure token alınıyor: {target_url}")
         target_url = get_direct_stream(target_url, "proxy_auto_token")
 
     if not is_allowed_domain(target_url):
