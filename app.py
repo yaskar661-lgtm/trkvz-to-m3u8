@@ -86,7 +86,7 @@ def fetch_token_for_channel(channel_key):
 
     return raw_url
 
-@app.route("/api/<channel_name>")
+@app.route("/stream/<channel_name>")
 def api_channel(channel_name):
     """Kanalları tarar, secure tokenli linkin içeriğini kaçış karaktersiz olarak cache'e kaydeder ve sunar."""
     now = time.time()
