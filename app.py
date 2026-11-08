@@ -40,7 +40,9 @@ CHANNELS = {
     "atvavrupa": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/atvavrupa/atvavrupa.m3u8"},
     "anewshd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/anewshd/anewshd.m3u8"},
     "aparahd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/aparahd/aparahd.m3u8"},
+    "apara": {"type": "daion", "url": "https://trkvz.daioncdn.net/apara/apara.m3u8?app=mobile_web"},
     "vavtv": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/vavtv/vavtv.m3u8"},
+    "vavtvndvr": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/vavtvndvr/vavtvndvr.m3u8"},
 }
 
 def is_allowed_domain(url):
