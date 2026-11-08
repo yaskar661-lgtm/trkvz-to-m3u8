@@ -3,7 +3,7 @@ import re
 import requests
 import os
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 app = Flask(__name__)
 
@@ -22,25 +22,18 @@ TARGET_HEADERS = {
 
 # Bellek içi cache ve kanal tanımları
 CACHE = {}
-CACHE_TTL = 15 * 60  # 15 dakika
+# Daion tokenleri çok çabuk expire olduğu için cache süresini dinamik/kısa tutuyoruz
+CACHE_TTL_DAION = 90  # 90 saniye
+CACHE_TTL_ERCDN = 15 * 60  # 15 dakika
 
 CHANNELS = {
-    "ahaber": {"type": "daion", "url": "https://trkvz.daioncdn.net/ahaber/ahaber.m3u8?app=mobile_web"},
     "ahaberhd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/ahaberhd/ahaberhd.m3u8"},
     "asporhd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/asporhd/asporhd.m3u8"},
     "atvhd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/atvhd/atvhd.m3u8"},
     "atv": {"type": "daion", "url": "https://trkvz.daioncdn.net/atv/atv.m3u8?ce=3&app=d1ce2d40-5256-4550-b02e-e73c185a314e"},
     "aspor": {"type": "daion", "url": "https://trkvz.daioncdn.net/aspor/aspor.m3u8?ce=3&app=45f847c4-04e8-419a-a561-2ebf87084765"},
     "a2tv": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/a2tv/a2tv.m3u8"},
-    "a2tvdai": {"type": "daion", "url": "https://trkvz.daioncdn.net/a2tv/a2tv.m3u8?ce=3&app=59363a60-be96-4f73-9eff-355d0ff2c758"},
     "minikago": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/minikago/minikago.m3u8"},
-    "minikagodai": {"type": "daion", "url": "https://trkvz.daioncdn.net/minikago/minikago.m3u8?app=web&ce=3"},
-    "minikagococuk": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/minikagococuk/minikagococuk.m3u8"},
-    "minikagococukdai": {"type": "daion", "url": "https://trkvz.daioncdn.net/minikago_cocuk/minikago_cocuk.m3u8?app=web&ce=3"},
-    "atvavrupa": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/atvavrupa/atvavrupa.m3u8"},
-    "anewshd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/anewshd/anewshd.m3u8"},
-    "aparahd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/aparahd/aparahd.m3u8"},
-    "vavtv": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/vavtv/vavtv.m3u8"},
 }
 
 def is_allowed_domain(url):
@@ -55,7 +48,7 @@ def fix_url(target_url):
             target_url = "https://" + target_url.lstrip("/")
     return target_url
 
-def fetch_token_for_channel(channel_key):
+def fetch_token_for_channel(channel_key, force_refresh=False):
     """Daion ve ErCDN için özel token istek yapısı."""
     if channel_key not in CHANNELS:
         return None
@@ -63,15 +56,11 @@ def fetch_token_for_channel(channel_key):
     ch = CHANNELS[channel_key]
     raw_url = ch["url"]
     
-    # KURAL: Sadece ahaberhd ve asporhd ErCDN tarafında kesinlikle tokensizdir.
-    # atvhd ve diğerleri token gerektirir.
     if ch["type"] == "ercdn" and channel_key in ["ahaberhd", "asporhd"]:
         return raw_url
 
     rand_num = int(time.time() * 1000) % 1000000
-    # Tüm secure token istekleri standart endpoint üzerinden yürütülür
     secure_api = f"https://securevideotoken.tmgrup.com.tr/webtv/secure?{rand_num}"
-
     target_api_url = f"{secure_api}&url={requests.utils.quote(raw_url)}"
 
     try:
@@ -88,14 +77,16 @@ def fetch_token_for_channel(channel_key):
 
 @app.route("/api/<channel_name>")
 def api_channel(channel_name):
-    """Kanalları tarar, secure tokenli linkin içeriğini kaçış karaktersiz olarak cache'e kaydeder ve sunar."""
     now = time.time()
     
     if channel_name not in CHANNELS:
         return f"Kanal bulunamadı: {channel_name}", 404
 
+    ch_type = CHANNELS[channel_name]["type"]
+    ttl = CACHE_TTL_DAION if ch_type == "daion" else CACHE_TTL_ERCDN
+
     # Cache kontrolü
-    if channel_name in CACHE and (now - CACHE[channel_name]["timestamp"] < CACHE_TTL):
+    if channel_name in CACHE and (now - CACHE[channel_name]["timestamp"] < ttl):
         content = CACHE[channel_name]["content"]
         return Response(content, mimetype="application/vnd.apple.mpegurl")
 
@@ -128,7 +119,6 @@ def api_channel(channel_name):
             else:
                 new_lines.append(line)
 
-        # Kaçış karakteri olmaksızın ham m3u8 metni
         final_content = "\n".join(new_lines)
 
         CACHE[channel_name] = {
@@ -155,24 +145,32 @@ def proxy_media():
     if not target_url:
         return "URL/URI belirtilmedi", 400
 
-    # Doğrudan ham m3u8 linki veya kanal adı ile istek atıldığında secure tokenli sürüme otomatik yönlendir
+    # Kanal eşleşmesi kontrolü
+    matched_channel = None
     for ch_name, ch_info in CHANNELS.items():
         if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
+            matched_channel = ch_name
             resolved = fetch_token_for_channel(ch_name)
             if resolved:
                 target_url = resolved
             break
-
-    for ch_data in CACHE.values():
-        cached_res_url = ch_data.get("resolved_url", "")
-        if cached_res_url and (target_url in cached_res_url or cached_res_url in target_url):
-            target_url = cached_res_url
 
     if not is_allowed_domain(target_url):
         return "Bu domainin proxy'lenmesine izin verilmiyor.", 403
 
     try:
         req = requests.get(target_url, headers=TARGET_HEADERS, stream=True, timeout=10)
+        
+        # AKILLI DAION YENİLEME: Eğer 401 veya 403 alınırsa token süresi dolmuştur; cache'i silip taze token ile tekrar dene
+        if req.status_code in [401, 403] and matched_channel:
+            print(f"[{matched_channel}] Token süresi doldu ({req.status_code}), taze token yenileniyor...")
+            if matched_channel in CACHE:
+                del CACHE[matched_channel]
+            fresh_resolved = fetch_token_for_channel(matched_channel)
+            if fresh_resolved:
+                target_url = fresh_resolved
+                req = requests.get(target_url, headers=TARGET_HEADERS, stream=True, timeout=10)
+
         req.raise_for_status()
 
         content_type = req.headers.get("Content-Type", "application/octet-stream")
