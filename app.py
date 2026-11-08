@@ -5,7 +5,7 @@ import time
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, Response, jsonify, render_template_string, request, has_request_context
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 app = Flask(__name__)
 
@@ -26,6 +26,8 @@ def fix_url(target_url):
     if not target_url:
         return target_url
     target_url = target_url.strip()
+    if "%" in target_url:
+        target_url = unquote(target_url)
     if not target_url.startswith("http://") and not target_url.startswith("https://"):
         if any(d in target_url for d in ALLOWED_DOMAINS):
             target_url = "https://" + target_url.lstrip("/")
@@ -81,10 +83,21 @@ def get_direct_stream(raw_url, channel_name="proxy_auto"):
         success_key = next((k for k in response if k.lower() == 'success'), None)
         url_key = next((k for k in response if k.lower() == 'url'), None)
         
+        resolved = None
         if success_key and response[success_key] and url_key:
-            return response[url_key]
+            resolved = response[url_key]
         elif url_key and response[url_key]:
-            return response[url_key]
+            resolved = response[url_key]
+            
+        if resolved:
+            # ce=3 parametresinin eksiksiz eklenmesini garantile
+            if "daioncdn" in resolved.lower() and "ce=" not in resolved:
+                separator = "&" if "?" in resolved else "?"
+                resolved = f"{resolved}{separator}ce=3"
+            elif "daioncdn" in resolved.lower() and "ce=2" in resolved:
+                resolved = resolved.replace("ce=2", "ce=3")
+            return resolved
+            
     except Exception as e:
         print(f"[-] Doğrudan secure token isteği başarısız ({channel_name}): {e}")
         
@@ -237,7 +250,13 @@ def daion_player_page():
         const responseData = await response.json();
         const urlKey = Object.keys(responseData).find(k => k.toLowerCase() === 'url');
         if (urlKey && responseData[urlKey]) {
-          return responseData[urlKey];
+          let resUrl = responseData[urlKey];
+          if (resUrl.includes("daioncdn") && !resUrl.includes("ce=")) {
+            resUrl += (resUrl.includes("?") ? "&" : "?") + "ce=3";
+          } else if (resUrl.includes("ce=2")) {
+            resUrl = resUrl.replace("ce=2", "ce=3");
+          }
+          return resUrl;
         }
       } catch (err) {
         console.warn(`[${channelName}] Doğrudan token alınamadı, ham linke düşülüyor.`);
@@ -383,18 +402,14 @@ def stream_route(channel_name):
 
 @app.route('/proxy')
 def proxy_media():
-    # URL'in tamamını ham olarak yakala (Flask'ın & parametrelerini bölmesini engellemek için)
-    full_path = request.full_path # Örn: /proxy?url=https://...&app=...
+    full_path = request.full_path
     match = re.search(r'[?&](?:url|URL|uri|URI)=([^&]+(?:&.*)?)', full_path)
     
     if match:
         target_url = match.group(1)
-        # Eğer url=%2F... şeklinde encode edilmişse veya ek parametreler varsa çöz
         if "%" in target_url and not target_url.startswith("http"):
-            from urllib.parse import unquote
             target_url = unquote(target_url)
     else:
-        # Fallback standart yöntem
         raw_target = (
             request.args.get("url") or 
             request.args.get("URL") or 
