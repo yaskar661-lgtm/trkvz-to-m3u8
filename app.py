@@ -162,7 +162,6 @@ def daion_player_page():
   <div class="container">
     <h2>Turkuvaz Çoklu Kanal Canlı Yayın Oynatıcı</h2>
     <div id="status">Durum: Başlatılıyor...</div>
-    <!-- /stream/atvdai rotasının regex ile yakalayacağı gizli veya açık alan -->
     <div id="linkBox">Aktif M3U8 Linki: Bekleniyor...</div><br>
     
     <label for="channelSelect">Kanal Seçin:</label><br>
@@ -219,15 +218,21 @@ def daion_player_page():
       if (rawUrl.includes("ercdn.net")) {
         return rawUrl;
       }
-      const isDaion = rawUrl.toLowerCase().includes("daioncdn") || rawUrl.includes("app=");
+      
       const randNum = Math.floor(Math.random() * 1000000);
+      const timestamp = Date.now();
       const secureApi = `https://securevideotoken.tmgrup.com.tr/webtv/secure?{randNum}`.replace('{randNum}', randNum);
       const targetUrl = `${secureApi}&url=${encodeURIComponent(rawUrl)}`;
 
       try {
         const response = await fetch(targetUrl, {
           method: 'GET',
-          headers: { "Referer": "https://www.atv.com.tr/" }
+          headers: { 
+            "Referer": "https://www.atv.com.tr/",
+            "X-isApp": "false",
+            "X-Rand": timestamp.toString(),
+            "Origin": "https://www.atv.com.tr"
+          }
         });
         const responseData = await response.json();
         const urlKey = Object.keys(responseData).find(k => k.toLowerCase() === 'url');
@@ -248,7 +253,7 @@ def daion_player_page():
         return cached.url;
       }
 
-      statusDiv.innerText = `Durum: [${channelName}] hazırlanıyor...`;
+      statusDiv.innerText = `Durum: [${channelName}] taze token alınıyor...`;
       const rawUrl = channels[channelName];
       const freshUrl = await fetchSecureStreamUrl(rawUrl, channelName);
 
@@ -267,7 +272,7 @@ def daion_player_page():
       statusDiv.innerText = `Durum: [${selectedKey}] yükleniyor...`;
       const finalVideoSrc = await getCachedOrFreshStreamUrl(selectedKey, false);
 
-      // Backend /stream/atvdai buradaki yazıyı Regex ile okuyacak
+      // Doğrudan secure token'lı imzalı link ekrandaki kutuya yazdırılır
       linkBox.innerText = "Aktif M3U8 Linki: " + finalVideoSrc;
 
       if (Hls.isSupported()) {
@@ -328,21 +333,14 @@ def stream_route(channel_name):
     
     if channel_name == "atvdai":
         try:
-            # 1. /daion/index.html sayfasını requests ile çek
             page_res = requests.get(f"{host_root}/daion/index.html", timeout=5)
             if page_res.status_code == 200:
                 html_text = page_res.text
-                
-                # 2. HTML içindeki JS objesinden veya linkBox yazısından atvdai m3u8 linkini Regex ile bul
-                # Örn: "atvdai": "https://trkvz.daioncdn.net/atv/atv.m3u8?..." yakalama:
                 match = re.search(r'"atvdai"\s*:\s*"(https://[^"]+)"', html_text)
                 if match:
                     raw_atv_url = match.group(1)
-                    
-                    # 3. Bulunan bu raw URL'yi token fonksiyonumuzla çöz
                     resolved_url = get_direct_stream(raw_atv_url, "atvdai")
                     if resolved_url:
-                        # 4. İçeriği çekip segmentleri proxy üzerinden rewrite et
                         m3u8_res = requests.get(resolved_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
                         if m3u8_res.status_code == 200:
                             raw_content = m3u8_res.text
@@ -364,9 +362,8 @@ def stream_route(channel_name):
                                 updated_lines.append(line)
                             return Response("\n".join(updated_lines), mimetype='application/vnd.apple.mpegurl')
         except Exception as e:
-            print(f"[-] atvdai regex stream hatası: {e}")
+            print(f"[-] atvdai index.html regex hatası: {e}")
 
-    # Diğer daion ve ercdn kanalları kendi token yöntemiyle devam eder
     if channel_name not in ALL_CHANNELS:
         return "Kanal bulunamadı", 404
     
