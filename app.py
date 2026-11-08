@@ -14,42 +14,22 @@ ALLOWED_DOMAINS = [
     "trkvz-live.daioncdn.net"
 ]
 
-def get_headers_for_url(url):
-    """İstek atılan URL veya kanala göre uygun Referer ve Origin başlıklarını belirler."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    }
-    
-    url_lower = url.lower()
-    if "aspor" in url_lower:
-        headers["Referer"] = "https://www.aspor.com.tr/"
-        headers["Origin"] = "https://www.aspor.com.tr"
-    elif "ahaber" in url_lower:
-        headers["Referer"] = "https://www.ahaber.com.tr/"
-        headers["Origin"] = "https://www.ahaber.com.tr"
-    elif "a2tv" in url_lower:
-        headers["Referer"] = "https://www.a2tv.com.tr/"
-        headers["Origin"] = "https://www.a2tv.com.tr"
-    elif "minika" in url_lower:
-        headers["Referer"] = "https://www.minikacocuk.com.tr/"
-        headers["Origin"] = "https://www.minikacocuk.com.tr"
-    else:
-        headers["Referer"] = "https://www.atv.com.tr/"
-        headers["Origin"] = "https://www.atv.com.tr"
-        
-    return headers
+TARGET_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.atv.com.tr/",
+    "Origin": "https://www.atv.com.tr",
+}
 
-# Sadece Token URL'sini cache'leyeceğiz (Playlist içeriğini değil!)
-TOKEN_CACHE = {}
-TOKEN_TTL_DAION = 90       # Daion token ömrü
-TOKEN_TTL_ERCDN = 15 * 60  # ErCDN token ömrü
+# Bellek içi cache ve kanal tanımları
+CACHE = {}
+CACHE_TTL = 15 * 60  # 15 dakika
 
 CHANNELS = {
     "ahaber": {"type": "daion", "url": "https://trkvz.daioncdn.net/ahaber/ahaber.m3u8?app=mobile_web"},
     "ahaberhd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/ahaberhd/ahaberhd.m3u8"},
     "asporhd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/asporhd/asporhd.m3u8"},
     "atvhd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/atvhd/atvhd.m3u8"},
-    "atv": {"type": "daion", "url": "https://trkvz.daioncdn.net/atv/atv.m3u8?ce=3&app=d1ce2d40-5256-4550-b02e-e73c185a314e"},
+    "atv": {"type": "daion", "url": "https://trkvz.daioncdn.net/atv/atv.m3u8?ce=3&app=d5eb593f-39d9-4b01-9cfd-4748e8332cf0"},
     "aspor": {"type": "daion", "url": "https://trkvz.daioncdn.net/aspor/aspor.m3u8?ce=3&app=45f847c4-04e8-419a-a561-2ebf87084765"},
     "a2tv": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/a2tv/a2tv.m3u8"},
     "a2tvdai": {"type": "daion", "url": "https://trkvz.daioncdn.net/a2tv/a2tv.m3u8?ce=3&app=59363a60-be96-4f73-9eff-355d0ff2c758"},
@@ -75,43 +55,32 @@ def fix_url(target_url):
             target_url = "https://" + target_url.lstrip("/")
     return target_url
 
-def get_resolved_url_for_channel(channel_key, force_refresh=False):
-    """Kanal için cache'lenmiş secure token URL'sini döner, süresi dolduysa yenisini alır."""
+def fetch_token_for_channel(channel_key):
+    """Daion ve ErCDN için özel token istek yapısı."""
     if channel_key not in CHANNELS:
         return None
     
     ch = CHANNELS[channel_key]
     raw_url = ch["url"]
     
+    # KURAL: Sadece ahaberhd ve asporhd ErCDN tarafında kesinlikle tokensizdir.
+    # atvhd ve diğerleri token gerektirir.
     if ch["type"] == "ercdn" and channel_key in ["ahaberhd", "asporhd"]:
         return raw_url
 
-    now = time.time()
-    ttl = TOKEN_TTL_DAION if ch["type"] == "daion" else TOKEN_TTL_ERCDN
-
-    if not force_refresh and channel_key in TOKEN_CACHE:
-        item = TOKEN_CACHE[channel_key]
-        if now - item["timestamp"] < ttl:
-            return item["url"]
-
-    # Yeni token talep et
     rand_num = int(time.time() * 1000) % 1000000
+    # Tüm secure token istekleri standart endpoint üzerinden yürütülür
     secure_api = f"https://securevideotoken.tmgrup.com.tr/webtv/secure?{rand_num}"
+
     target_api_url = f"{secure_api}&url={requests.utils.quote(raw_url)}"
 
     try:
-        headers = get_headers_for_url(raw_url)
-        resp = requests.get(target_api_url, headers=headers, timeout=8)
+        resp = requests.get(target_api_url, headers=TARGET_HEADERS, timeout=8)
         resp.raise_for_status()
         data = resp.json()
         url_key = next((k for k in data.keys() if k.lower() == 'url'), None)
         if url_key and data[url_key]:
-            resolved = data[url_key]
-            TOKEN_CACHE[channel_key] = {
-                "url": resolved,
-                "timestamp": now
-            }
-            return resolved
+            return data[url_key]
     except Exception as e:
         print(f"[{channel_key}] Token alınamadı: {e}")
 
@@ -119,17 +88,23 @@ def get_resolved_url_for_channel(channel_key, force_refresh=False):
 
 @app.route("/api/<channel_name>")
 def api_channel(channel_name):
+    """Kanalları tarar, secure tokenli linkin içeriğini kaçış karaktersiz olarak cache'e kaydeder ve sunar."""
+    now = time.time()
+    
     if channel_name not in CHANNELS:
         return f"Kanal bulunamadı: {channel_name}", 404
 
-    resolved_url = get_resolved_url_for_channel(channel_name)
+    # Cache kontrolü
+    if channel_name in CACHE and (now - CACHE[channel_name]["timestamp"] < CACHE_TTL):
+        content = CACHE[channel_name]["content"]
+        return Response(content, mimetype="application/vnd.apple.mpegurl")
+
+    resolved_url = fetch_token_for_channel(channel_name)
     if not resolved_url:
         return "Yayın linki çözülemedi", 500
 
     try:
-        # M3U8 içeriğini ASLA cache'lemiyoruz, her defasında canlı/taze çekiyoruz
-        headers = get_headers_for_url(resolved_url)
-        resp = requests.get(resolved_url, headers=headers, timeout=10)
+        resp = requests.get(resolved_url, headers=TARGET_HEADERS, timeout=10)
         resp.raise_for_status()
         
         playlist_content = resp.text
@@ -153,7 +128,15 @@ def api_channel(channel_name):
             else:
                 new_lines.append(line)
 
+        # Kaçış karakteri olmaksızın ham m3u8 metni
         final_content = "\n".join(new_lines)
+
+        CACHE[channel_name] = {
+            "content": final_content,
+            "timestamp": now,
+            "resolved_url": resolved_url
+        }
+
         return Response(final_content, mimetype="application/vnd.apple.mpegurl")
 
     except Exception as e:
@@ -172,36 +155,28 @@ def proxy_media():
     if not target_url:
         return "URL/URI belirtilmedi", 400
 
-    matched_channel = None
+    # Doğrudan ham m3u8 linki veya kanal adı ile istek atıldığında secure tokenli sürüme otomatik yönlendir
     for ch_name, ch_info in CHANNELS.items():
         if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
-            matched_channel = ch_name
-            resolved = get_resolved_url_for_channel(ch_name)
+            resolved = fetch_token_for_channel(ch_name)
             if resolved:
                 target_url = resolved
             break
+
+    for ch_data in CACHE.values():
+        cached_res_url = ch_data.get("resolved_url", "")
+        if cached_res_url and (target_url in cached_res_url or cached_res_url in target_url):
+            target_url = cached_res_url
 
     if not is_allowed_domain(target_url):
         return "Bu domainin proxy'lenmesine izin verilmiyor.", 403
 
     try:
-        headers = get_headers_for_url(target_url)
-        req = requests.get(target_url, headers=headers, stream=True, timeout=10)
-        
-        # Eğer segment veya m3u8 isteğinde 401/403 alınırsa token bayatlamıştır; taze token alıp 1 kez tekrar dene
-        if req.status_code in [401, 403] and matched_channel:
-            print(f"[{matched_channel}] Yetkilendirme hatası ({req.status_code}), taze token alınıyor...")
-            fresh_resolved = get_resolved_url_for_channel(matched_channel, force_refresh=True)
-            if fresh_resolved:
-                target_url = fresh_resolved
-                headers = get_headers_for_url(target_url)
-                req = requests.get(target_url, headers=headers, stream=True, timeout=10)
-
+        req = requests.get(target_url, headers=TARGET_HEADERS, stream=True, timeout=10)
         req.raise_for_status()
 
         content_type = req.headers.get("Content-Type", "application/octet-stream")
 
-        # Eğer gelen istek bir m3u8 playlist dosyası ise canlı olarak segmentleri rewrite et
         if "application/vnd.apple.mpegurl" in content_type or "audio/mpegurl" in content_type or target_url.endswith(".m3u8"):
             playlist_content = req.text
             base_url = re.sub(r"[^/]+$", "", target_url)
@@ -227,7 +202,6 @@ def proxy_media():
             updated_playlist = "\n".join(new_lines)
             return Response(updated_playlist, mimetype="application/vnd.apple.mpegurl")
 
-        # TS segmentlerini direkt stream et
         return Response(
             req.iter_content(chunk_size=8192),
             status=req.status_code,
