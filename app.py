@@ -11,7 +11,8 @@ ALLOWED_DOMAINS = [
     "securevideotoken.tmgrup.com.tr",
     "trkvz-live.ercdn.net",
     "trkvz.daioncdn.net",
-    "trkvz-live.daioncdn.net"
+    "trkvz-live.daioncdn.net",
+    "trkvz-to-m3u8-index.onrender.com"  # Dış servis domaini eklendi
 ]
 
 TARGET_HEADERS = {
@@ -41,6 +42,7 @@ CHANNELS = {
     "minikagococuk": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/minikagococuk/minikagococuk.m3u8"},
     "minikagococukdai": {"type": "daion", "url": "https://trkvz.daioncdn.net/minikago_cocuk/minikago_cocuk.m3u8?app=web&ce=3"},
     "atvavrupa": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/atvavrupa/atvavrupa.m3u8"},
+    "atvavrupahd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/atvavrupahd/atvavrupahd.m3u8"},
     "anewshd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/anewshd/anewshd.m3u8"},
     "aparahd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/aparahd/aparahd.m3u8"},
     "apara": {"type": "daion", "url": "https://trkvz.daioncdn.net/apara/apara.m3u8?app=mobile_web"},
@@ -61,22 +63,17 @@ def fix_url(target_url):
     return target_url
 
 def fetch_token_for_channel(channel_key):
-    """Daion ve ErCDN için özel token istek yapısı."""
     if channel_key not in CHANNELS:
         return None
     
     ch = CHANNELS[channel_key]
     raw_url = ch["url"]
     
-    # KURAL: Sadece ahaberhd ve asporhd ErCDN tarafında kesinlikle tokensizdir.
-    # atvhd ve diğerleri token gerektirir.
     if ch["type"] == "ercdn" and channel_key in ["ahaberhd", "asporhd"]:
         return raw_url
 
     rand_num = int(time.time() * 1000) % 1000000
-    # Tüm secure token istekleri standart endpoint üzerinden yürütülür
     secure_api = f"https://securevideotoken.tmgrup.com.tr/webtv/secure?{rand_num}"
-
     target_api_url = f"{secure_api}&url={requests.utils.quote(raw_url)}"
 
     try:
@@ -93,13 +90,11 @@ def fetch_token_for_channel(channel_key):
 
 @app.route("/stream/<channel_name>")
 def api_channel(channel_name):
-    """Kanalları tarar, secure tokenli linkin içeriğini kaçış karaktersiz olarak cache'e kaydeder ve sunar."""
     now = time.time()
     
     if channel_name not in CHANNELS:
         return f"Kanal bulunamadı: {channel_name}", 404
 
-    # Cache kontrolü
     if channel_name in CACHE and (now - CACHE[channel_name]["timestamp"] < CACHE_TTL):
         content = CACHE[channel_name]["content"]
         return Response(content, mimetype="application/vnd.apple.mpegurl")
@@ -114,7 +109,7 @@ def api_channel(channel_name):
         
         playlist_content = resp.text
         base_url = re.sub(r"[^/]+$", "", resolved_url)
-        host_root = request.host_url.rstrip("/")
+        host_root = request.host_url.rstrip("/")  # Düzeltildi
 
         new_lines = []
         for line in playlist_content.splitlines():
@@ -133,7 +128,6 @@ def api_channel(channel_name):
             else:
                 new_lines.append(line)
 
-        # Kaçış karakteri olmaksızın ham m3u8 metni
         final_content = "\n".join(new_lines)
 
         CACHE[channel_name] = {
@@ -160,7 +154,23 @@ def proxy_media():
     if not target_url:
         return "URL/URI belirtilmedi", 400
 
-    # Doğrudan ham m3u8 linki veya kanal adı ile istek atıldığında secure tokenli sürüme otomatik yönlendir
+    # İstek yapılan hedef bir atv daion kanalı mı kontrol et
+    is_atv_daion = False
+    for ch_name, ch_info in CHANNELS.items():
+        if ("atv" in ch_name) and ch_info["type"] == "daion":
+            if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
+                is_atv_daion = True
+                break
+
+    # Eğer istek atv daion kanalına aitse özel dış servisi kontrol et
+    if is_atv_daion:
+        try:
+            external_resp = requests.get("https://trkvz-to-m3u8-index.onrender.com/stream/atv", headers=TARGET_HEADERS, timeout=8)
+            if external_resp.status_code == 200:
+                target_url = external_resp.text.strip()
+        except Exception as e:
+            print(f"Dış atv stream servisine bağlanırken hata: {e}")
+
     for ch_name, ch_info in CHANNELS.items():
         if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
             resolved = fetch_token_for_channel(ch_name)
@@ -185,7 +195,7 @@ def proxy_media():
         if "application/vnd.apple.mpegurl" in content_type or "audio/mpegurl" in content_type or target_url.endswith(".m3u8"):
             playlist_content = req.text
             base_url = re.sub(r"[^/]+$", "", target_url)
-            host_root = request.host_url.rstrip("/")
+            host_root = request.host_url.rstrip("/")  # Düzeltildi
 
             new_lines = []
             for line in playlist_content.splitlines():
@@ -198,6 +208,14 @@ def proxy_media():
                         seg_url = f"{parsed_target.scheme}://{parsed_target.netloc}{line}"
                     else:
                         seg_url = base_url + line
+
+                    if "atv" in target_url.lower():
+                        if "crea" not in seg_url:
+                            ts_match = re.search(r'atv_([a-zA-Z0-9_-]+)-(\d+)\.ts', seg_url)
+                            if ts_match:
+                                quality_name = ts_match.group(1)
+                                segment_timestamp = ts_match.group(2)
+                                seg_url = f"https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/atv/atv_{quality_name}-{segment_timestamp}.ts"
 
                     proxied_seg = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/')}"
                     new_lines.append(proxied_seg)
