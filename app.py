@@ -3,7 +3,7 @@ import re
 import requests
 import os
 import time
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import urlparse
 
 app = Flask(__name__)
 
@@ -14,17 +14,38 @@ ALLOWED_DOMAINS = [
     "trkvz-live.daioncdn.net"
 ]
 
-TARGET_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://www.atv.com.tr/",
-    "Origin": "https://www.atv.com.tr",
-}
+def get_headers_for_url(url):
+    """İstek atılan URL veya kanala göre uygun Referer ve Origin başlıklarını dinamik olarak belirler."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    
+    url_lower = url.lower()
+    if "aspor" in url_lower:
+        headers["Referer"] = "https://www.aspor.com.tr/"
+        headers["Origin"] = "https://www.aspor.com.tr"
+    elif "ahaber" in url_lower:
+        headers["Referer"] = "https://www.ahaber.com.tr/"
+        headers["Origin"] = "https://www.ahaber.com.tr"
+    elif "a2tv" in url_lower:
+        headers["Referer"] = "https://www.atv.com.tr/"
+        headers["Origin"] = "https://www.atv.com.tr"
+    elif "minikacocuk" in url_lower or "minikagococuk" in url_lower or "minikagococuk" in url_lower:
+        headers["Referer"] = "https://www.minikacocuk.com.tr/"
+        headers["Origin"] = "https://www.minikacocuk.com.tr"
+    elif "minikago" in url_lower:
+        headers["Referer"] = "https://www.minikago.com.tr/"
+        headers["Origin"] = "https://www.minikacocuk.com.tr"
+    else:
+        headers["Referer"] = "https://www.atv.com.tr/"
+        headers["Origin"] = "https://www.atv.com.tr"
+        
+    return headers
 
 # Bellek içi cache ve kanal tanımları
 CACHE = {}
-# Daion tokenleri çok çabuk expire olduğu için cache süresini dinamik/kısa tutuyoruz
-CACHE_TTL_DAION = 90  # 90 saniye
-CACHE_TTL_ERCDN = 15 * 60  # 15 dakika
+CACHE_TTL_DAION = 90       # Daion tokenleri hızlı expire olduğu için 90 saniye
+CACHE_TTL_ERCDN = 15 * 60  # ErCDN için 15 dakika
 
 CHANNELS = {
     "ahaberhd": {"type": "ercdn", "url": "https://trkvz-live.ercdn.net/ahaberhd/ahaberhd.m3u8"},
@@ -48,7 +69,7 @@ def fix_url(target_url):
             target_url = "https://" + target_url.lstrip("/")
     return target_url
 
-def fetch_token_for_channel(channel_key, force_refresh=False):
+def fetch_token_for_channel(channel_key):
     """Daion ve ErCDN için özel token istek yapısı."""
     if channel_key not in CHANNELS:
         return None
@@ -56,6 +77,7 @@ def fetch_token_for_channel(channel_key, force_refresh=False):
     ch = CHANNELS[channel_key]
     raw_url = ch["url"]
     
+    # ahaberhd ve asporhd ErCDN tarafında tokensizdir
     if ch["type"] == "ercdn" and channel_key in ["ahaberhd", "asporhd"]:
         return raw_url
 
@@ -64,7 +86,8 @@ def fetch_token_for_channel(channel_key, force_refresh=False):
     target_api_url = f"{secure_api}&url={requests.utils.quote(raw_url)}"
 
     try:
-        resp = requests.get(target_api_url, headers=TARGET_HEADERS, timeout=8)
+        headers = get_headers_for_url(raw_url)
+        resp = requests.get(target_api_url, headers=headers, timeout=8)
         resp.raise_for_status()
         data = resp.json()
         url_key = next((k for k in data.keys() if k.lower() == 'url'), None)
@@ -85,7 +108,6 @@ def api_channel(channel_name):
     ch_type = CHANNELS[channel_name]["type"]
     ttl = CACHE_TTL_DAION if ch_type == "daion" else CACHE_TTL_ERCDN
 
-    # Cache kontrolü
     if channel_name in CACHE and (now - CACHE[channel_name]["timestamp"] < ttl):
         content = CACHE[channel_name]["content"]
         return Response(content, mimetype="application/vnd.apple.mpegurl")
@@ -95,7 +117,8 @@ def api_channel(channel_name):
         return "Yayın linki çözülemedi", 500
 
     try:
-        resp = requests.get(resolved_url, headers=TARGET_HEADERS, timeout=10)
+        headers = get_headers_for_url(resolved_url)
+        resp = requests.get(resolved_url, headers=headers, timeout=10)
         resp.raise_for_status()
         
         playlist_content = resp.text
@@ -145,7 +168,6 @@ def proxy_media():
     if not target_url:
         return "URL/URI belirtilmedi", 400
 
-    # Kanal eşleşmesi kontrolü
     matched_channel = None
     for ch_name, ch_info in CHANNELS.items():
         if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
@@ -159,17 +181,19 @@ def proxy_media():
         return "Bu domainin proxy'lenmesine izin verilmiyor.", 403
 
     try:
-        req = requests.get(target_url, headers=TARGET_HEADERS, stream=True, timeout=10)
+        headers = get_headers_for_url(target_url)
+        req = requests.get(target_url, headers=headers, stream=True, timeout=10)
         
-        # AKILLI DAION YENİLEME: Eğer 401 veya 403 alınırsa token süresi dolmuştur; cache'i silip taze token ile tekrar dene
+        # 401 veya 403 alınırsa token bayatlamıştır; cache'i temizle ve taze token ile tekrar dene
         if req.status_code in [401, 403] and matched_channel:
-            print(f"[{matched_channel}] Token süresi doldu ({req.status_code}), taze token yenileniyor...")
+            print(f"[{matched_channel}] Yetkilendirme hatası ({req.status_code}), token tazeleniyor...")
             if matched_channel in CACHE:
                 del CACHE[matched_channel]
             fresh_resolved = fetch_token_for_channel(matched_channel)
             if fresh_resolved:
                 target_url = fresh_resolved
-                req = requests.get(target_url, headers=TARGET_HEADERS, stream=True, timeout=10)
+                headers = get_headers_for_url(target_url)
+                req = requests.get(target_url, headers=headers, stream=True, timeout=10)
 
         req.raise_for_status()
 
