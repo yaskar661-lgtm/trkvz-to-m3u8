@@ -1,4 +1,4 @@
-from flask import Flask, Response, request
+from flask import Flask, Response, request, jsonify
 import re
 import requests
 import os
@@ -24,6 +24,7 @@ TARGET_HEADERS = {
 
 # Bellek içi cache ve kanal tanımları
 CACHE = {}
+TOKEN_CACHE = {}  # Token'ları ayrı cache'lemek için
 CACHE_TTL = 15 * 60  # 15 dakika
 
 CHANNELS = {
@@ -67,11 +68,19 @@ def fetch_token_for_channel(channel_key):
     if channel_key not in CHANNELS:
         return None
     
+    now = time.time()
+    
+    # 1. Önce Token Cache kontrolü yapalım (Süre dolmadıysa önbellekten dön)
+    if channel_key in TOKEN_CACHE and (now - TOKEN_CACHE[channel_key]["timestamp"] < CACHE_TTL):
+        return TOKEN_CACHE[channel_key]["data"]
+
     ch = CHANNELS[channel_key]
     raw_url = ch["url"]
     
     if ch["type"] == "ercdn" and channel_key in ["ahaberhd", "asporhd"]:
-        return raw_url
+        result = {"url": raw_url, "raw_url": raw_url}
+        TOKEN_CACHE[channel_key] = {"data": result, "timestamp": now}
+        return result
 
     rand_num = int(time.time() * 1000) % 1000000
     secure_api = f"https://securevideotoken.tmgrup.com.tr/webtv/secure?{rand_num}"
@@ -81,13 +90,41 @@ def fetch_token_for_channel(channel_key):
         resp = requests.get(target_api_url, headers=TARGET_HEADERS, timeout=8)
         resp.raise_for_status()
         data = resp.json()
+        
+        # Token verisini ve orijinal halini cache'e kaydediyoruz
+        result = {
+            "channel": channel_key,
+            "raw_url": raw_url,
+            "token_response": data
+        }
+        
         url_key = next((k for k in data.keys() if k.lower() == 'url'), None)
         if url_key and data[url_key]:
-            return data[url_key]
+            result["resolved_url"] = data[url_key]
+
+        # Token cache'ini güncelle
+        TOKEN_CACHE[channel_key] = {
+            "data": result,
+            "timestamp": now
+        }
+        return result
+
     except Exception as e:
         print(f"[{channel_key}] Token alınamadı: {e}")
 
-    return raw_url
+    return {"channel": channel_key, "raw_url": raw_url, "error": "Token alınamadı"}
+
+# YENİ: JSON verisini sunacak /api/<channel_name> route'u
+@app.route("/api/<channel_name>")
+def api_get_channel_json(channel_name):
+    if channel_name not in CHANNELS:
+        return jsonify({"error": f"Kanal bulunamadı: {channel_name}"}), 404
+    
+    token_data = fetch_token_for_channel(channel_name)
+    if not token_data:
+        return jsonify({"error": "Token çözümlenemedi"}), 500
+        
+    return jsonify(token_data)
 
 @app.route("/stream/<channel_name>")
 def api_channel(channel_name):
@@ -100,7 +137,10 @@ def api_channel(channel_name):
         content = CACHE[channel_name]["content"]
         return Response(content, mimetype="application/vnd.apple.mpegurl")
 
-    resolved_url = fetch_token_for_channel(channel_name)
+    # Güncellenen fonksiyondan resolved_url bilgisini alıyoruz
+    token_result = fetch_token_for_channel(channel_name)
+    resolved_url = token_result.get("resolved_url") or token_result.get("raw_url")
+    
     if not resolved_url:
         return "Yayın linki çözülemedi", 500
 
@@ -110,7 +150,7 @@ def api_channel(channel_name):
         
         playlist_content = resp.text
         base_url = re.sub(r"[^/]+$", "", resolved_url)
-        host_root = request.host_url.rstrip("/")  # Düzeltildi
+        host_root = request.host_url.rstrip("/")
 
         new_lines = []
         for line in playlist_content.splitlines():
@@ -234,6 +274,7 @@ def proxy_media():
 
     except Exception as e:
         return f"Medya aktarım hatası: {str(e)}", 500
+    pass
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
