@@ -227,7 +227,7 @@ def proxy_media():
             return Response(updated_playlist, mimetype="application/vnd.apple.mpegurl")
 
         return Response(
-            req.iter_content(chunk_size=8192),
+            req.iter_content(chunk_size=65536),
             status=req.status_code,
             mimetype=content_type,
         )
