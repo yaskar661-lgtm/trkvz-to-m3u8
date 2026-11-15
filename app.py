@@ -8,11 +8,9 @@ from urllib.parse import urlparse
 app = Flask(__name__)
 
 ALLOWED_DOMAINS = [
-    "securevideotoken.tmgrup.com.tr",
     "trkvz-live.ercdn.net",
     "trkvz.daioncdn.net",
     "trkvz-live.daioncdn.net",
-    "trkvz-to-m3u8-index.onrender.com",
     "rnttwmjcin.turknet.ercdn.net"
 ]
 
