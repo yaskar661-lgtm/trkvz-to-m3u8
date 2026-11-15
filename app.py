@@ -153,12 +153,11 @@ def proxy_media():
     if not target_url:
         return "URL/URI belirtilmedi", 400
 
-    # 1. Adım: İstek yapılan hedef, tipi "daion" olan herhangi bir kanal mı kontrol et
+    # Tipi "daion" olan herhangi bir kanal mı kontrol et
     matched_channel_key = None
     is_daion_channel = False
     
     for ch_name, ch_info in CHANNELS.items():
-        # URL eşleşmesi veya kanal adına göre kontrol
         if ch_info["type"] == "daion":
             if (target_url == ch_info["url"] or 
                 ch_info["url"] in target_url or 
@@ -168,13 +167,11 @@ def proxy_media():
                 is_daion_channel = True
                 break
 
-    # 2. Adım: Eğer daion tipindeyse, güncel token veya akış bilgisini tazele
     if is_daion_channel and matched_channel_key:
         resolved = fetch_token_for_channel(matched_channel_key)
         if resolved:
             target_url = resolved
 
-    # Genel cache ve diğer kanal eşleşmeleri (Eğer yukarıda yakalanamadıysa)
     if not matched_channel_key:
         for ch_name, ch_info in CHANNELS.items():
             if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
@@ -203,7 +200,9 @@ def proxy_media():
         if "application/vnd.apple.mpegurl" in content_type or "audio/mpegurl" in content_type or target_url.endswith(".m3u8"):
             playlist_content = req.text
             base_url = re.sub(r"[^/]+$", "", target_url)
-            host_root = request.host_root.rstrip("/")
+            
+            # BURASI DÜZELTİLDİ: host_root yerine host_url kullanıldı
+            host_root = request.host_url.rstrip("/")
 
             new_lines = []
             for line in playlist_content.splitlines():
@@ -217,17 +216,12 @@ def proxy_media():
                     else:
                         seg_url = base_url + line
 
-                    # 3. Adım: Tipin daion olan kanallar için genel crea / ercdn dönüşüm kontrolü
                     if is_daion_channel:
                         if "crea" not in seg_url:
-                            # İhtiyacına göre regex kalıbını tüm daion kanallarına uyarlayabilirsin
-                            # Örn: atv, ahaber, aspor vb. için dinamik segment yakalama
                             ts_match = re.search(r'(?:atv|ahaber|aspor|apara|minikago)_([a-zA-Z0-9_-]+)-(\d+)\.ts', seg_url)
                             if ts_match:
-                                prefix_name = ts_match.group(0).split('_')[0] # Kanal adını dinamik alabilmek için
                                 quality_name = ts_match.group(1)
                                 segment_timestamp = ts_match.group(2)
-                                # İlgili ercdn veya turknet CDN yapısına yönlendirme
                                 seg_url = f"https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/{matched_channel_key}/{matched_channel_key}_{quality_name}-{segment_timestamp}.ts"
 
                     proxied_seg = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/')}"
