@@ -162,16 +162,20 @@ def proxy_media():
             if (target_url == ch_info["url"] or 
                 ch_info["url"] in target_url or 
                 target_url.endswith(f"/{ch_name}.m3u8") or
+                f"/{ch_name}/" in target_url or
                 ch_name in target_url.lower()):
                 matched_channel_key = ch_name
                 is_daion_channel = True
                 break
 
+    # Eğer istek doğrudan bir alt kalite m3u8 dosyası değilse token mekanizmasını çalıştır (Döngü koruması)
     if is_daion_channel and matched_channel_key:
-        resolved = fetch_token_for_channel(matched_channel_key)
-        if resolved:
-            target_url = resolved
+        if not any(qual in target_url for qual in ["_1080p.m3u8", "_720p.m3u8", "_480p.m3u8", "_360p.m3u8"]):
+            resolved = fetch_token_for_channel(matched_channel_key)
+            if resolved:
+                target_url = resolved
 
+    # Eğer yukarıda eşleşmediyse diğer kanalları kontrol et
     if not matched_channel_key:
         for ch_name, ch_info in CHANNELS.items():
             if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
@@ -200,8 +204,6 @@ def proxy_media():
         if "application/vnd.apple.mpegurl" in content_type or "audio/mpegurl" in content_type or target_url.endswith(".m3u8"):
             playlist_content = req.text
             base_url = re.sub(r"[^/]+$", "", target_url)
-            
-            # BURASI DÜZELTİLDİ: host_root yerine host_url kullanıldı
             host_root = request.host_url.rstrip("/")
 
             new_lines = []
@@ -216,7 +218,8 @@ def proxy_media():
                     else:
                         seg_url = base_url + line
 
-                    if is_daion_channel:
+                    # Tipi daion olan ve crea barındırmayan segmentler için ercdn yönlendirmesi
+                    if is_daion_channel and matched_channel_key:
                         if "crea" not in seg_url:
                             ts_match = re.search(r'(?:atv|ahaber|aspor|apara|minikago)_([a-zA-Z0-9_-]+)-(\d+)\.ts', seg_url)
                             if ts_match:
