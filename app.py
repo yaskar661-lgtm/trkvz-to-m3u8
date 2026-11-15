@@ -178,7 +178,7 @@ def proxy_media():
     for ch_name, ch_info in CHANNELS.items():
         if ("apara" in ch_name) and ch_info["type"] == "daion":
             if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
-                is_atv_daion = True
+                is_apara_daion = True
                 break
     
     if is_atv_daion:
