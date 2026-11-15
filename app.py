@@ -155,17 +155,75 @@ def proxy_media():
     if not target_url:
         return "URL/URI belirtilmedi", 400
 
-    # Kanal tespiti
-    detected_channel = None
+    is_atv_daion = False
     for ch_name, ch_info in CHANNELS.items():
-        if ch_name in target_url.lower() or target_url == ch_info["url"]:
-            detected_channel = ch_name
+        if ("atv" in ch_name) and ch_info["type"] == "daion":
+            if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
+                is_atv_daion = True
+                break
+                
+    is_ahaber_daion = False
+    for ch_name, ch_info in CHANNELS.items():
+        if ("ahaber" in ch_name) and ch_info["type"] == "daion":
+            if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
+                is_ahaber_daion = True
+                break
+    is_aspor_daion = False
+    for ch_name, ch_info in CHANNELS.items():
+        if ("aspor" in ch_name) and ch_info["type"] == "daion":
+            if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
+                is_aspor_daion = True
+                break
+    is_apara_daion = False
+    for ch_name, ch_info in CHANNELS.items():
+        if ("apara" in ch_name) and ch_info["type"] == "daion":
+            if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
+                is_atv_daion = True
+                break
+    
+    if is_atv_daion:
+        try:
+            external_resp = requests.get("https://trkvz-to-m3u8-link.onrender.com/stream/atv", headers=TARGET_HEADERS, timeout=8)
+            if external_resp.status_code == 200:
+                target_url = external_resp.text.strip()
+        except Exception as e:
+            print(f"Dış servise bağlanırken hata: {e}")
+            
+    if is_ahaber_daion:
+        try:
+            external_resp = requests.get("https://trkvz-to-m3u8-link.onrender.com/stream/ahaber", headers=TARGET_HEADERS, timeout=8)
+            if external_resp.status_code == 200:
+                target_url = external_resp.text.strip()
+        except Exception as e:
+            print(f"Dış servise bağlanırken hata: {e}")
+            
+    if is_aspor_daion:
+        try:
+            external_resp = requests.get("https://trkvz-to-m3u8-link.onrender.com/stream/aspor", headers=TARGET_HEADERS, timeout=8)
+            if external_resp.status_code == 200:
+                target_url = external_resp.text.strip()
+        except Exception as e:
+            print(f"Dış servise bağlanırken hata: {e}")
+            
+    if is_apara_daion:
+        try:
+            external_resp = requests.get("https://trkvz-to-m3u8-link.onrender.com/stream/apara", headers=TARGET_HEADERS, timeout=8)
+            if external_resp.status_code == 200:
+                target_url = external_resp.text.strip()
+        except Exception as e:
+            print(f"Dış servise bağlanırken hata: {e}")
+
+    for ch_name, ch_info in CHANNELS.items():
+        if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
+            resolved = fetch_token_for_channel(ch_name)
+            if resolved:
+                target_url = resolved
             break
 
-    if detected_channel:
-        resolved = fetch_token_for_channel(detected_channel)
-        if resolved:
-            target_url = resolved
+    for ch_data in CACHE.values():
+        cached_res_url = ch_data.get("resolved_url", "")
+        if cached_res_url and (target_url in cached_res_url or cached_res_url in target_url):
+            target_url = cached_res_url
 
     if not is_allowed_domain(target_url):
         return "Bu domainin proxy'lenmesine izin verilmiyor.", 403
@@ -179,10 +237,7 @@ def proxy_media():
         if "application/vnd.apple.mpegurl" in content_type or "audio/mpegurl" in content_type or target_url.endswith(".m3u8"):
             playlist_content = req.text
             base_url = re.sub(r"[^/]+$", "", target_url)
-            host_root = request.host_url.rstrip("/")
-
-            # İstek yapılan kaynak daioncdn mi kontrol edelim
-            is_daion = "daioncdn.net" in target_url
+            host_root = request.host_url.rstrip("/")  # Düzeltildi
 
             new_lines = []
             for line in playlist_content.splitlines():
@@ -196,16 +251,38 @@ def proxy_media():
                     else:
                         seg_url = base_url + line
 
-                    # Kural: Eğer kaynak daioncdn ise ve segment URL'inde "crea" geçmiyorsa TurkNet ercdn'ye yönlendir
-                    if is_daion and "crea" not in seg_url:
-                        ts_match = re.search(r'([a-zA-Z0-9_-]+)_([a-zA-Z0-9_-]+)-(\d+)\.ts', seg_url)
-                        if ts_match:
-                            ch_name = ts_match.group(1)
-                            quality = ts_match.group(2)
-                            timestamp = ts_match.group(3)
-                            seg_url = f"https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/{ch_name}/{ch_name}_{quality}-{timestamp}.ts"
-
-                    # Ercdn kaynakları ise (veya daion içinde 'crea' varsa) normal bırakılır
+                    if "atv" in target_url.lower():
+                        if "crea" not in seg_url:
+                            ts_match = re.search(r'atv_([a-zA-Z0-9_-]+)-(\d+)\.ts', seg_url)
+                            if ts_match:
+                                quality_name = ts_match.group(1)
+                                segment_timestamp = ts_match.group(2)
+                                seg_url = f"https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/atv/atv_{quality_name}-{segment_timestamp}.ts"
+                                
+                    if "ahaber" in target_url.lower():
+                        if "crea" not in seg_url:
+                            ts_match = re.search(r'ahaber_([a-zA-Z0-9_-]+)-(\d+)\.ts', seg_url)
+                            if ts_match:
+                                quality_name = ts_match.group(1)
+                                segment_timestamp = ts_match.group(2)
+                                seg_url = f"https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/ahaber/ahaber_{quality_name}-{segment_timestamp}.ts"
+                                
+                    if "aspor" in target_url.lower():
+                        if "crea" not in seg_url:
+                            ts_match = re.search(r'aspor_([a-zA-Z0-9_-]+)-(\d+)\.ts', seg_url)
+                            if ts_match:
+                                quality_name = ts_match.group(1)
+                                segment_timestamp = ts_match.group(2)
+                                seg_url = f"https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/aspor/aspor_{quality_name}-{segment_timestamp}.ts"
+                                
+                    if "apara" in target_url.lower():
+                        if "crea" not in seg_url:
+                            ts_match = re.search(r'apara_([a-zA-Z0-9_-]+)-(\d+)\.ts', seg_url)
+                            if ts_match:
+                                quality_name = ts_match.group(1)
+                                segment_timestamp = ts_match.group(2)
+                                seg_url = f"https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/apara/apara_{quality_name}-{segment_timestamp}.ts"
+                    
                     proxied_seg = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/')}"
                     new_lines.append(proxied_seg)
                 else:
@@ -222,7 +299,7 @@ def proxy_media():
 
     except Exception as e:
         return f"Medya aktarım hatası: {str(e)}", 500
-        
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
