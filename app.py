@@ -8,9 +8,11 @@ from urllib.parse import urlparse
 app = Flask(__name__)
 
 ALLOWED_DOMAINS = [
+    "securevideotoken.tmgrup.com.tr",
     "trkvz-live.ercdn.net",
     "trkvz.daioncdn.net",
     "trkvz-live.daioncdn.net",
+    "trkvz-to-m3u8-index.onrender.com",
     "rnttwmjcin.turknet.ercdn.net"
 ]
 
@@ -153,39 +155,29 @@ def proxy_media():
     if not target_url:
         return "URL/URI belirtilmedi", 400
 
-    # Tipi "daion" olan herhangi bir kanal mı kontrol et
-    matched_channel_key = None
-    is_daion_channel = False
-    
+    # İstek yapılan hedef bir atv daion kanalı mı kontrol et
+    is_atv_daion = False
     for ch_name, ch_info in CHANNELS.items():
-        if ch_info["type"] == "daion":
-            if (target_url == ch_info["url"] or 
-                ch_info["url"] in target_url or 
-                target_url.endswith(f"/{ch_name}.m3u8") or
-                f"/{ch_name}/" in target_url or
-                ch_name in target_url.lower()):
-                matched_channel_key = ch_name
-                is_daion_channel = True
+        if ("atv" in ch_name) and ch_info["type"] == "daion":
+            if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
+                is_atv_daion = True
                 break
 
-    # Eğer istek doğrudan bir alt kalite m3u8 dosyası değilse token mekanizmasını çalıştır (Döngü koruması)
-    if is_daion_channel and matched_channel_key:
-        if not any(qual in target_url for qual in ["_1080p.m3u8", "_720p.m3u8", "_480p.m3u8", "_360p.m3u8"]):
-            resolved = fetch_token_for_channel(matched_channel_key)
+    # Eğer istek atv daion kanalına aitse özel dış servisi kontrol et
+    if is_atv_daion:
+        try:
+            external_resp = requests.get("https://trkvz-to-m3u8-index.onrender.com/stream/atv", headers=TARGET_HEADERS, timeout=8)
+            if external_resp.status_code == 200:
+                target_url = external_resp.text.strip()
+        except Exception as e:
+            print(f"Dış atv stream servisine bağlanırken hata: {e}")
+
+    for ch_name, ch_info in CHANNELS.items():
+        if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
+            resolved = fetch_token_for_channel(ch_name)
             if resolved:
                 target_url = resolved
-
-    # Eğer yukarıda eşleşmediyse diğer kanalları kontrol et
-    if not matched_channel_key:
-        for ch_name, ch_info in CHANNELS.items():
-            if target_url == ch_info["url"] or ch_info["url"] in target_url or target_url.endswith(f"/{ch_name}.m3u8"):
-                resolved = fetch_token_for_channel(ch_name)
-                if resolved:
-                    target_url = resolved
-                matched_channel_key = ch_name
-                if ch_info["type"] == "daion":
-                    is_daion_channel = True
-                break
+            break
 
     for ch_data in CACHE.values():
         cached_res_url = ch_data.get("resolved_url", "")
@@ -204,7 +196,7 @@ def proxy_media():
         if "application/vnd.apple.mpegurl" in content_type or "audio/mpegurl" in content_type or target_url.endswith(".m3u8"):
             playlist_content = req.text
             base_url = re.sub(r"[^/]+$", "", target_url)
-            host_root = request.host_url.rstrip("/")
+            host_root = request.host_url.rstrip("/")  # Düzeltildi
 
             new_lines = []
             for line in playlist_content.splitlines():
@@ -218,14 +210,14 @@ def proxy_media():
                     else:
                         seg_url = base_url + line
 
-                    # Tipi daion olan ve crea barındırmayan segmentler için ercdn yönlendirmesi
-                    if is_daion_channel and matched_channel_key:
+                    if "atv" in target_url.lower():
                         if "crea" not in seg_url:
-                            ts_match = re.search(r'(?:atv|ahaber|aspor|apara|minikago)_([a-zA-Z0-9_-]+)-(\d+)\.ts', seg_url)
+                            ts_match = re.search(r'(?:atv|ahaber|aspor|apara)_([a-zA-Z0-9_-]+)-(\d+)\.ts', seg_url)
                             if ts_match:
-                                quality_name = ts_match.group(1)
-                                segment_timestamp = ts_match.group(2)
-                                seg_url = f"https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/{matched_channel_key}/{matched_channel_key}_{quality_name}-{segment_timestamp}.ts"
+                                channel_name = ts_match.group(1)
+                                quality_name = ts_match.group(2)
+                                segment_timestamp = ts_match.group(3)
+                                seg_url = f"https://rnttwmjcin.turknet.ercdn.net/lcpmvefbyo/{channel_name}/{channel_name}_{quality_name}-{segment_timestamp}.ts"
 
                     proxied_seg = f"{host_root}/proxy?url={requests.utils.quote(seg_url, safe=':/')}"
                     new_lines.append(proxied_seg)
